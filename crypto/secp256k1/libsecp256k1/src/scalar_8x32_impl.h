@@ -7,6 +7,10 @@
 #ifndef _SECP256K1_SCALAR_REPR_IMPL_H_
 #define _SECP256K1_SCALAR_REPR_IMPL_H_
 
+#ifdef __AVX2__
+#include <immintrin.h>
+#endif
+
 /* Limbs of the secp256k1 order. */
 #define SECP256K1_N_0 ((uint32_t)0xD0364141UL)
 #define SECP256K1_N_1 ((uint32_t)0xBFD25E8CUL)
@@ -488,7 +492,20 @@ static void secp256k1_scalar_reduce_512(secp256k1_scalar *r, const uint32_t *l) 
     secp256k1_scalar_reduce(r, c + secp256k1_scalar_check_overflow(r));
 }
 
+static void secp256k1_scalar_mul_512_avx2(uint32_t *l, const secp256k1_scalar *a, const secp256k1_scalar *b) {
+    __m256i a_vec = _mm256_loadu_si256((__m256i*)a->d);
+    __m256i b_vec = _mm256_loadu_si256((__m256i*)b->d);
+    __m256i result = _mm256_mullo_epi32(a_vec, b_vec);
+    _mm256_storeu_si256((__m256i*)l, result);
+}
+
 static void secp256k1_scalar_mul_512(uint32_t *l, const secp256k1_scalar *a, const secp256k1_scalar *b) {
+#ifdef __AVX2__
+    if (secp256k1_cpuid_has_avx2()) {
+        secp256k1_scalar_mul_512_avx2(l, a, b);
+        return;
+    }
+#endif
     /* 96 bit accumulator. */
     uint32_t c0 = 0, c1 = 0, c2 = 0;
 
