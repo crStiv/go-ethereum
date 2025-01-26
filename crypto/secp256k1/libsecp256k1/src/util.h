@@ -110,4 +110,14 @@ static SECP256K1_INLINE void *checked_malloc(const secp256k1_callback* cb, size_
 SECP256K1_GNUC_EXT typedef unsigned __int128 uint128_t;
 #endif
 
+#ifdef __AVX2__
+static int secp256k1_cpuid_has_avx2(void) {
+    unsigned int eax, ebx, ecx, edx;
+    __asm__ __volatile__("cpuid"
+        : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
+        : "0"(7), "c"(0));
+    return (ebx >> 5) & 1;
+}
+#endif
+
 #endif
