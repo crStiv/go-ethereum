@@ -54,12 +54,11 @@ type session struct {
 	writeKey     []byte
 	readKey      []byte
 	nonceCounter uint32
-	node         *enode.Node
 }
 
 // keysFlipped returns a copy of s with the read and write keys flipped.
 func (s *session) keysFlipped() *session {
-	return &session{s.readKey, s.writeKey, s.nonceCounter, s.node}
+	return &session{s.readKey, s.writeKey, s.nonceCounter}
 }
 
 func NewSessionCache(maxItems int, clock mclock.Clock) *SessionCache {
@@ -104,19 +103,8 @@ func (sc *SessionCache) readKey(id enode.ID, addr string) []byte {
 	return nil
 }
 
-func (sc *SessionCache) readNode(id enode.ID, addr string) *enode.Node {
-	if s := sc.session(id, addr); s != nil {
-		return s.node
-	}
-	return nil
-}
-
 // storeNewSession stores new encryption keys in the cache.
-func (sc *SessionCache) storeNewSession(id enode.ID, addr string, s *session, n *enode.Node) {
-	if n == nil {
-		panic("nil node in storeNewSession")
-	}
-	s.node = n
+func (sc *SessionCache) storeNewSession(id enode.ID, addr string, s *session) {
 	sc.sessions.Add(sessionID{id, addr}, s)
 }
 

@@ -146,7 +146,7 @@ func TestPriceHeapSorting(t *testing.T) {
 			)
 			index[addr] = []*blobTxMeta{{
 				id:                   uint64(j),
-				storageSize:          128 * 1024,
+				size:                 128 * 1024,
 				nonce:                0,
 				execTipCap:           execTip,
 				execFeeCap:           execFee,
@@ -205,7 +205,7 @@ func benchmarkPriceHeapReinit(b *testing.B, datacap uint64) {
 		)
 		index[addr] = []*blobTxMeta{{
 			id:                   uint64(i),
-			storageSize:          128 * 1024,
+			size:                 128 * 1024,
 			nonce:                0,
 			execTipCap:           execTip,
 			execFeeCap:           execFee,
@@ -281,7 +281,7 @@ func benchmarkPriceHeapOverflow(b *testing.B, datacap uint64) {
 		)
 		index[addr] = []*blobTxMeta{{
 			id:                   uint64(i),
-			storageSize:          128 * 1024,
+			size:                 128 * 1024,
 			nonce:                0,
 			execTipCap:           execTip,
 			execFeeCap:           execFee,
@@ -312,7 +312,7 @@ func benchmarkPriceHeapOverflow(b *testing.B, datacap uint64) {
 		)
 		metas[i] = &blobTxMeta{
 			id:                   uint64(int(blobs) + i),
-			storageSize:          128 * 1024,
+			size:                 128 * 1024,
 			nonce:                0,
 			execTipCap:           execTip,
 			execFeeCap:           execFee,

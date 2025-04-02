@@ -16,7 +16,7 @@ which can
 1. Take a prestate, including
    - Accounts,
    - Block context information,
-   - Previous block hashes (*optional)
+   - Previous blockshashes (*optional)
 2. Apply a set of transactions,
 3. Apply a mining-reward (*optional),
 4. And generate a post-state, including

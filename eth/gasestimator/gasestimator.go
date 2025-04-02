@@ -223,9 +223,7 @@ func run(ctx context.Context, call *core.Message, opts *Options) (*core.Executio
 		dirtyState = opts.State.Copy()
 	)
 	if opts.BlockOverrides != nil {
-		if err := opts.BlockOverrides.Apply(&evmContext); err != nil {
-			return nil, err
-		}
+		opts.BlockOverrides.Apply(&evmContext)
 	}
 	// Lower the basefee to 0 to avoid breaking EVM
 	// invariants (basefee < feecap).

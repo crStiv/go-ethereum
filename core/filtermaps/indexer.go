@@ -17,7 +17,6 @@
 package filtermaps
 
 import (
-	"errors"
 	"math"
 	"time"
 
@@ -37,28 +36,26 @@ func (f *FilterMaps) indexerLoop() {
 
 	if f.disabled {
 		f.reset()
-		close(f.disabledCh)
 		return
 	}
 	log.Info("Started log indexer")
 
 	for !f.stop {
 		if !f.indexedRange.initialized {
-			if f.targetView.headNumber == 0 {
-				// initialize when chain head is available
+			if err := f.init(); err != nil {
+				log.Error("Error initializing log index", "error", err)
+				// unexpected error; there is not a lot we can do here, maybe it
+				// recovers, maybe not. Calling event processing here ensures
+				// that we can still properly shutdown in case of an infinite loop.
 				f.processSingleEvent(true)
 				continue
 			}
-			if err := f.init(); err != nil {
-				f.disableForError("initialization", err)
-				f.reset() // remove broken index from DB
-				return
-			}
 		}
 		if !f.targetHeadIndexed() {
-			if err := f.tryIndexHead(); err != nil && err != errChainUpdate {
-				f.disableForError("head rendering", err)
-				return
+			if !f.tryIndexHead() {
+				// either shutdown or unexpected error; in the latter case ensure
+				// that proper shutdown is still possible.
+				f.processSingleEvent(true)
 			}
 		} else {
 			if f.finalBlock != f.lastFinal {
@@ -67,37 +64,11 @@ func (f *FilterMaps) indexerLoop() {
 				}
 				f.lastFinal = f.finalBlock
 			}
-			// always attempt unindexing before indexing the tail in order to
-			// ensure that a potentially dirty previously unindexed epoch is
-			// always cleaned up before any new maps are rendered.
-			if done, err := f.tryUnindexTail(); err != nil {
-				f.disableForError("tail unindexing", err)
-				return
-			} else if !done {
-				continue
+			if f.tryIndexTail() && f.tryUnindexTail() {
+				f.waitForNewHead()
 			}
-			if done, err := f.tryIndexTail(); err != nil {
-				f.disableForError("tail rendering", err)
-				return
-			} else if !done {
-				continue
-			}
-			// tail indexing/unindexing is done; if head is also indexed then
-			// wait here until there is a new head
-			f.waitForNewHead()
 		}
 	}
-}
-
-// disableForError is called when the indexer encounters a database error, for example a
-// missing receipt. We can't continue operating when the database is broken, so the
-// indexer goes into disabled state.
-// Note that the partial index is left in disk; maybe a client update can fix the
-// issue without reindexing.
-func (f *FilterMaps) disableForError(op string, err error) {
-	log.Error("Log index "+op+" failed, reverting to unindexed mode", "error", err)
-	f.disabled = true
-	close(f.disabledCh)
 }
 
 type targetUpdate struct {
@@ -140,15 +111,14 @@ func (f *FilterMaps) SetBlockProcessing(blockProcessing bool) {
 // WaitIdle blocks until the indexer is in an idle state while synced up to the
 // latest targetView.
 func (f *FilterMaps) WaitIdle() {
+	if f.disabled {
+		f.closeWg.Wait()
+		return
+	}
 	for {
 		ch := make(chan bool)
-		select {
-		case f.waitIdleCh <- ch:
-			if <-ch {
-				return
-			}
-		case <-f.disabledCh:
-			f.closeWg.Wait()
+		f.waitIdleCh <- ch
+		if <-ch {
 			return
 		}
 	}
@@ -221,16 +191,16 @@ func (f *FilterMaps) setTarget(target targetUpdate) {
 	f.finalBlock = target.finalBlock
 }
 
-// tryIndexHead tries to render head maps according to the current targetView.
-// Should be called when targetHeadIndexed returns false. If this function
-// returns no error then either stop is true or head indexing is finished.
-func (f *FilterMaps) tryIndexHead() error {
+// tryIndexHead tries to render head maps according to the current targetView
+// and returns true if successful.
+func (f *FilterMaps) tryIndexHead() bool {
 	headRenderer, err := f.renderMapsBefore(math.MaxUint32)
 	if err != nil {
-		return err
+		log.Error("Error creating log index head renderer", "error", err)
+		return false
 	}
 	if headRenderer == nil {
-		return errors.New("head indexer has nothing to do") // tryIndexHead should be called when head is not indexed
+		return true
 	}
 	if !f.startedHeadIndex {
 		f.lastLogHeadIndex = time.Now()
@@ -255,7 +225,8 @@ func (f *FilterMaps) tryIndexHead() error {
 			f.lastLogHeadIndex = time.Now()
 		}
 	}); err != nil {
-		return err
+		log.Error("Log index head rendering failed", "error", err)
+		return false
 	}
 	if f.loggedHeadIndex && f.indexedRange.hasIndexedBlocks() {
 		log.Info("Log index head rendering finished",
@@ -264,7 +235,7 @@ func (f *FilterMaps) tryIndexHead() error {
 			"elapsed", common.PrettyDuration(time.Since(f.startedHeadIndexAt)))
 	}
 	f.loggedHeadIndex, f.startedHeadIndex = false, false
-	return nil
+	return true
 }
 
 // tryIndexTail tries to render tail epochs until the tail target block is
@@ -272,7 +243,7 @@ func (f *FilterMaps) tryIndexHead() error {
 // Note that tail indexing is only started if the log index head is fully
 // rendered according to targetView and is suspended as soon as the targetView
 // is changed.
-func (f *FilterMaps) tryIndexTail() (bool, error) {
+func (f *FilterMaps) tryIndexTail() bool {
 	for {
 		firstEpoch := f.indexedRange.maps.First() >> f.logMapsPerEpoch
 		if firstEpoch == 0 || !f.needTailEpoch(firstEpoch-1) {
@@ -280,7 +251,7 @@ func (f *FilterMaps) tryIndexTail() (bool, error) {
 		}
 		f.processEvents()
 		if f.stop || !f.targetHeadIndexed() {
-			return false, nil
+			return false
 		}
 		// resume process if tail rendering was interrupted because of head rendering
 		tailRenderer := f.tailRenderer
@@ -292,7 +263,8 @@ func (f *FilterMaps) tryIndexTail() (bool, error) {
 			var err error
 			tailRenderer, err = f.renderMapsBefore(f.indexedRange.maps.First())
 			if err != nil {
-				return false, err
+				log.Error("Error creating log index tail renderer", "error", err)
+				return false
 			}
 		}
 		if tailRenderer == nil {
@@ -325,16 +297,13 @@ func (f *FilterMaps) tryIndexTail() (bool, error) {
 				f.lastLogTailIndex = time.Now()
 			}
 		})
-		if err != nil && !f.needTailEpoch(firstEpoch-1) {
+		if err != nil && f.needTailEpoch(firstEpoch-1) {
 			// stop silently if cutoff point has move beyond epoch boundary while rendering
-			return true, nil
-		}
-		if err != nil {
-			return false, err
+			log.Error("Log index tail rendering failed", "error", err)
 		}
 		if !done {
 			f.tailRenderer = tailRenderer // only keep tail renderer if interrupted by stopCb
-			return false, nil
+			return false
 		}
 	}
 	if f.loggedTailIndex && f.indexedRange.hasIndexedBlocks() {
@@ -344,31 +313,32 @@ func (f *FilterMaps) tryIndexTail() (bool, error) {
 			"elapsed", common.PrettyDuration(time.Since(f.startedTailIndexAt)))
 		f.loggedTailIndex = false
 	}
-	return true, nil
+	return true
 }
 
 // tryUnindexTail removes entire epochs of log index data as long as the first
 // fully indexed block is at least as old as the tail target.
 // Note that unindexing is very quick as it only removes continuous ranges of
 // data from the database and is also called while running head indexing.
-func (f *FilterMaps) tryUnindexTail() (bool, error) {
-	firstEpoch := f.indexedRange.maps.First() >> f.logMapsPerEpoch
-	if f.indexedRange.tailPartialEpoch > 0 && firstEpoch > 0 {
-		firstEpoch--
-	}
-	for epoch := min(firstEpoch, f.cleanedEpochsBefore); !f.needTailEpoch(epoch); epoch++ {
+func (f *FilterMaps) tryUnindexTail() bool {
+	for {
+		firstEpoch := (f.indexedRange.maps.First() - f.indexedRange.tailPartialEpoch) >> f.logMapsPerEpoch
+		if f.needTailEpoch(firstEpoch) {
+			break
+		}
+		f.processEvents()
+		if f.stop {
+			return false
+		}
 		if !f.startedTailUnindex {
 			f.startedTailUnindexAt = time.Now()
 			f.startedTailUnindex = true
 			f.ptrTailUnindexMap = f.indexedRange.maps.First() - f.indexedRange.tailPartialEpoch
 			f.ptrTailUnindexBlock = f.indexedRange.blocks.First() - f.tailPartialBlocks()
 		}
-		if done, err := f.deleteTailEpoch(epoch); !done {
-			return false, err
-		}
-		f.processEvents()
-		if f.stop || !f.targetHeadIndexed() {
-			return false, nil
+		if err := f.deleteTailEpoch(firstEpoch); err != nil {
+			log.Error("Log index tail epoch unindexing failed", "error", err)
+			return false
 		}
 	}
 	if f.startedTailUnindex && f.indexedRange.hasIndexedBlocks() {
@@ -379,7 +349,7 @@ func (f *FilterMaps) tryUnindexTail() (bool, error) {
 			"elapsed", common.PrettyDuration(time.Since(f.startedTailUnindexAt)))
 		f.startedTailUnindex = false
 	}
-	return true, nil
+	return true
 }
 
 // needTailEpoch returns true if the given tail epoch needs to be kept
