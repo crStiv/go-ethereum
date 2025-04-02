@@ -480,7 +480,7 @@ func (st *stateTransition) execute() (*ExecutionResult, error) {
 
 	var (
 		ret   []byte
-		vmerr error // vm errors do not effect consensus and are therefore not assigned to err
+		vmerr error // vm errors do not affect consensus and are therefore not assigned to err
 	)
 	if contractCreation {
 		ret, _, st.gasRemaining, vmerr = st.evm.Create(msg.From, msg.Data, st.gasRemaining, value)
